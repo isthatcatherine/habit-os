@@ -1,0 +1,392 @@
+import { useState, useEffect } from "react";
+
+const DAILY_HABITS = [
+  { id: "sleep", label: "7-8 hrs Sleep", icon: "🌙", category: "health" },
+  { id: "teeth", label: "Brush Teeth 2×", icon: "🦷", category: "hygiene" },
+  { id: "nojunk", label: "No Chips/Sugar", icon: "🚫", category: "health", allowCheat: true },
+  { id: "screentime", label: "≤3hr Screen Time", icon: "📱", category: "mindset" },
+  { id: "reading", label: "Read 10-20 Pages", icon: "📖", category: "mind" },
+  { id: "cardio", label: "30min Cardio", icon: "🚶", category: "fitness" },
+  { id: "steps", label: "10,000 Steps", icon: "👟", category: "fitness" },
+];
+
+const WEEKLY_HABITS = [
+  { id: "run", label: "Run", icon: "🏃", target: "2-3×", targetMin: 2, targetMax: 3 },
+  { id: "stretch", label: "Stretch / Yoga", icon: "🧘", target: "3×", targetMin: 3, targetMax: 3 },
+  { id: "workout", label: "Workout", icon: "💪", target: "5-6×", targetMin: 5, targetMax: 6 },
+  { id: "hair", label: "Wash Hair", icon: "🚿", target: "2×", targetMin: 2, targetMax: 2 },
+  { id: "shave", label: "Shave", icon: "🪒", target: "1×", targetMin: 1, targetMax: 1 },
+];
+
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const BOOKS_READ = 3;
+const BOOKS_GOAL = 25;
+const PAGES_PER_BOOK = 300;
+
+function getWeekKey(offset = 0) {
+  const now = new Date();
+  const day = now.getDay();
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - ((day + 6) % 7) + offset * 7);
+  return monday.toISOString().slice(0, 10);
+}
+
+function computeWeekScore(dailyData, weeklyData) {
+  let earned = 0, total = 0;
+  DAILY_HABITS.forEach(h => {
+    DAYS.forEach((_, di) => {
+      total++;
+      const v = dailyData?.[h.id]?.[di];
+      if (v === true || v === "cheat") earned++;
+    });
+  });
+  WEEKLY_HABITS.forEach(h => {
+    const count = weeklyData?.[h.id] || 0;
+    total += h.targetMax;
+    earned += Math.min(count, h.targetMax);
+  });
+  return total > 0 ? Math.round((earned / total) * 100) : 0;
+}
+
+function generateAssessment(score, dailyData, weeklyData, prevScore) {
+  const delta = prevScore !== null ? score - prevScore : null;
+  let grade = score >= 90 ? "S" : score >= 75 ? "A" : score >= 60 ? "B" : score >= 45 ? "C" : "D";
+  let headline = score >= 90 ? "Exceptional week! 🔥" : score >= 75 ? "Strong week — keep the momentum." : score >= 60 ? "Solid effort with room to grow." : score >= 45 ? "Mixed week — identify what slipped." : "Tough week — let's reset and rebuild.";
+  
+  const missed = [];
+  DAILY_HABITS.forEach(h => {
+    const days = DAYS.filter((_, di) => !dailyData?.[h.id]?.[di]).length;
+    if (days >= 3) missed.push(`${h.label} (missed ${days} days)`);
+  });
+  WEEKLY_HABITS.forEach(h => {
+    const count = weeklyData?.[h.id] || 0;
+    if (count < h.targetMin) missed.push(`${h.label} (${count}/${h.targetMin} min)`);
+  });
+
+  const booksProgress = BOOKS_READ + Math.floor(((dailyData ? Object.values(dailyData?.reading || {}).filter(Boolean).length : 0) * 15) / PAGES_PER_BOOK);
+
+  return { grade, headline, missed, delta, booksProgress };
+}
+
+export default function HabitTracker() {
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [allData, setAllData] = useState({});
+  const [loaded, setLoaded] = useState(false);
+  const [view, setView] = useState("tracker"); // tracker | assessment
+  const [activeDay, setActiveDay] = useState(() => {
+    const d = new Date().getDay();
+    return d === 0 ? 6 : d - 1;
+  });
+
+  const weekKey = getWeekKey(weekOffset);
+  const prevWeekKey = getWeekKey(weekOffset - 1);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const result = await window.storage.get("habitData");
+        if (result?.value) setAllData(JSON.parse(result.value));
+      } catch {}
+      setLoaded(true);
+    }
+    load();
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    window.storage.set("habitData", JSON.stringify(allData)).catch(() => {});
+  }, [allData, loaded]);
+
+  const weekData = allData[weekKey] || { daily: {}, weekly: {} };
+  const prevWeekData = allData[prevWeekKey] || { daily: {}, weekly: {} };
+
+  function setWeekData(fn) {
+    setAllData(prev => {
+      const cur = prev[weekKey] || { daily: {}, weekly: {} };
+      return { ...prev, [weekKey]: fn(cur) };
+    });
+  }
+
+  function toggleDaily(habitId, dayIdx) {
+    setWeekData(w => {
+      const cur = w.daily[habitId]?.[dayIdx];
+      const habit = DAILY_HABITS.find(h => h.id === habitId);
+      let next;
+      if (!cur) next = true;
+      else if (cur === true && habit?.allowCheat) next = "cheat";
+      else next = false;
+      return {
+        ...w,
+        daily: {
+          ...w.daily,
+          [habitId]: { ...(w.daily[habitId] || {}), [dayIdx]: next }
+        }
+      };
+    });
+  }
+
+  function setWeeklyCount(habitId, val) {
+    setWeekData(w => ({
+      ...w,
+      weekly: { ...w.weekly, [habitId]: Math.max(0, val) }
+    }));
+  }
+
+  const score = computeWeekScore(weekData.daily, weekData.weekly);
+  const prevScore = Object.keys(allData).includes(prevWeekKey)
+    ? computeWeekScore(prevWeekData.daily, prevWeekData.weekly)
+    : null;
+  const assessment = generateAssessment(score, weekData.daily, weekData.weekly, prevScore);
+
+  const pagesRead = Object.values(weekData.daily?.reading || {}).filter(v => v === true).length * 15;
+  const totalPagesNeeded = (BOOKS_GOAL - BOOKS_READ) * PAGES_PER_BOOK;
+  const booksThisWeek = (pagesRead / PAGES_PER_BOOK).toFixed(1);
+
+  if (!loaded) return <div style={{ background: "#0a0a0f", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontFamily: "monospace" }}>Loading...</div>;
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "#07070d",
+      color: "#e8e8f0",
+      fontFamily: "'DM Mono', 'Courier New', monospace",
+      padding: "0 0 60px 0",
+    }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@700;800&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: #111; } ::-webkit-scrollbar-thumb { background: #333; }
+        .cell-done { background: #1aff8c22 !important; border-color: #1aff8c !important; color: #1aff8c !important; }
+        .cell-cheat { background: #ffaa0022 !important; border-color: #ffaa00 !important; color: #ffaa00 !important; }
+        .cell-empty { background: #ffffff08; border-color: #ffffff18; color: #ffffff30; cursor: pointer; }
+        .cell-empty:hover { background: #ffffff14 !important; border-color: #ffffff35 !important; }
+        .day-btn.active { background: #1aff8c; color: #07070d; }
+        .day-btn { background: #ffffff0a; border: 1px solid #ffffff18; color: #aaa; cursor: pointer; border-radius: 8px; padding: 6px 12px; font-family: inherit; font-size: 11px; transition: all 0.2s; }
+        .day-btn:hover { background: #ffffff18; }
+        .tab-btn { background: none; border: none; cursor: pointer; font-family: inherit; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; padding: 10px 20px; border-bottom: 2px solid transparent; transition: all 0.2s; color: #555; }
+        .tab-btn.active { color: #1aff8c; border-bottom-color: #1aff8c; }
+        .wk-btn { background: #ffffff08; border: 1px solid #ffffff18; color: #aaa; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
+        .wk-btn:hover { background: #1aff8c22; border-color: #1aff8c66; color: #1aff8c; }
+        .habit-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #ffffff08; }
+        .grade-ring { width: 72px; height: 72px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'Syne', sans-serif; font-size: 26px; font-weight: 800; border: 2px solid; }
+        .missed-item { background: #ff444411; border: 1px solid #ff444433; border-radius: 6px; padding: 6px 12px; font-size: 12px; color: #ff9999; margin-bottom: 6px; }
+      `}</style>
+
+      {/* Header */}
+      <div style={{ background: "#0d0d18", borderBottom: "1px solid #ffffff10", padding: "20px 20px 0" }}>
+        <div style={{ maxWidth: 600, margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div>
+              <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 22, fontWeight: 800, letterSpacing: -0.5, color: "#fff" }}>HABIT OS</div>
+              <div style={{ fontSize: 10, color: "#555", letterSpacing: 3, marginTop: 2 }}>LONG-TERM LIFESTYLE TRACKER</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "'Syne', sans-serif", color: score >= 75 ? "#1aff8c" : score >= 50 ? "#ffaa00" : "#ff6655" }}>{score}%</div>
+              <div style={{ fontSize: 10, color: "#555", letterSpacing: 2 }}>WEEK SCORE</div>
+            </div>
+          </div>
+
+          {/* Week nav */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <button className="wk-btn" onClick={() => setWeekOffset(w => w - 1)}>‹</button>
+            <div style={{ fontSize: 11, color: "#888", flex: 1, textAlign: "center", letterSpacing: 1 }}>
+              {weekOffset === 0 ? "THIS WEEK" : weekOffset === -1 ? "LAST WEEK" : `WEEK OF ${weekKey}`}
+              <span style={{ color: "#444", marginLeft: 8 }}>{weekKey}</span>
+            </div>
+            <button className="wk-btn" onClick={() => setWeekOffset(w => Math.min(0, w + 1))}>›</button>
+          </div>
+
+          {/* Tabs */}
+          <div style={{ display: "flex", borderBottom: "1px solid #ffffff10" }}>
+            <button className={`tab-btn ${view === "tracker" ? "active" : ""}`} onClick={() => setView("tracker")}>Tracker</button>
+            <button className={`tab-btn ${view === "assessment" ? "active" : ""}`} onClick={() => setView("assessment")}>Assessment</button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 600, margin: "0 auto", padding: "20px 20px 0" }}>
+
+        {view === "tracker" && <>
+          {/* Day selector */}
+          <div style={{ display: "flex", gap: 6, marginBottom: 20, overflowX: "auto", paddingBottom: 4 }}>
+            {DAYS.map((d, i) => (
+              <button key={d} className={`day-btn ${activeDay === i ? "active" : ""}`} onClick={() => setActiveDay(i)}>{d}</button>
+            ))}
+          </div>
+
+          {/* Daily habits */}
+          <div style={{ marginBottom: 28 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, color: "#444", marginBottom: 12 }}>DAILY HABITS — {DAYS[activeDay].toUpperCase()}</div>
+            {DAILY_HABITS.map(h => {
+              const val = weekData.daily?.[h.id]?.[activeDay];
+              const isDone = val === true;
+              const isCheat = val === "cheat";
+              return (
+                <div key={h.id} className="habit-row">
+                  <button
+                    onClick={() => toggleDaily(h.id, activeDay)}
+                    style={{
+                      width: 36, height: 36, borderRadius: 8, border: "1px solid",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 16, transition: "all 0.15s", flexShrink: 0,
+                      background: isDone ? "#1aff8c22" : isCheat ? "#ffaa0022" : "#ffffff08",
+                      borderColor: isDone ? "#1aff8c" : isCheat ? "#ffaa00" : "#ffffff18",
+                      cursor: "pointer"
+                    }}
+                    title={h.allowCheat ? "Tap: done → cheat day → not done" : ""}
+                  >
+                    {isDone ? "✓" : isCheat ? "○" : h.icon}
+                  </button>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: isDone ? "#e8e8f0" : isCheat ? "#ffaa00" : "#888" }}>{h.label}</div>
+                    {isCheat && <div style={{ fontSize: 10, color: "#ffaa0099", letterSpacing: 1 }}>CHEAT DAY</div>}
+                  </div>
+                  {/* Weekly progress dots */}
+                  <div style={{ display: "flex", gap: 3 }}>
+                    {DAYS.map((_, di) => {
+                      const v = weekData.daily?.[h.id]?.[di];
+                      return <div key={di} style={{
+                        width: 6, height: 6, borderRadius: "50%",
+                        background: v === true ? "#1aff8c" : v === "cheat" ? "#ffaa00" : "#ffffff18"
+                      }} />;
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Weekly habits */}
+          <div style={{ marginBottom: 28 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, color: "#444", marginBottom: 12 }}>WEEKLY HABITS — TAP TO LOG</div>
+            {WEEKLY_HABITS.map(h => {
+              const count = weekData.weekly?.[h.id] || 0;
+              const met = count >= h.targetMin;
+              const over = count >= h.targetMax;
+              return (
+                <div key={h.id} className="habit-row">
+                  <div style={{ fontSize: 20, width: 36, textAlign: "center" }}>{h.icon}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13 }}>{h.label}</div>
+                    <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, marginTop: 2 }}>TARGET {h.target}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button className="wk-btn" onClick={() => setWeeklyCount(h.id, count - 1)}>−</button>
+                    <div style={{
+                      fontSize: 16, fontFamily: "'Syne', sans-serif", fontWeight: 700, width: 24, textAlign: "center",
+                      color: over ? "#1aff8c" : met ? "#88ddaa" : count > 0 ? "#ffaa00" : "#555"
+                    }}>{count}</div>
+                    <button className="wk-btn" onClick={() => setWeeklyCount(h.id, count + 1)}>+</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Book progress */}
+          <div style={{ background: "#ffffff06", border: "1px solid #ffffff10", borderRadius: 12, padding: 16, marginBottom: 20 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, color: "#444", marginBottom: 10 }}>📚 READING GOAL 2025</div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ fontSize: 12, color: "#888" }}>{BOOKS_READ} / {BOOKS_GOAL} books read</span>
+              <span style={{ fontSize: 12, color: "#1aff8c" }}>~{booksThisWeek} books this week</span>
+            </div>
+            <div style={{ background: "#ffffff0a", borderRadius: 4, height: 6, overflow: "hidden" }}>
+              <div style={{ width: `${(BOOKS_READ / BOOKS_GOAL) * 100}%`, height: "100%", background: "linear-gradient(90deg, #1aff8c, #00ccff)", borderRadius: 4, transition: "width 0.4s" }} />
+            </div>
+            <div style={{ fontSize: 10, color: "#444", marginTop: 6 }}>
+              {BOOKS_GOAL - BOOKS_READ} books remaining · ~{Math.ceil((BOOKS_GOAL - BOOKS_READ) * PAGES_PER_BOOK / (7 * 15))} weeks at current pace
+            </div>
+          </div>
+        </>}
+
+        {view === "assessment" && <>
+          {/* Grade */}
+          <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 24, background: "#ffffff06", border: "1px solid #ffffff10", borderRadius: 16, padding: 20 }}>
+            <div className="grade-ring" style={{
+              borderColor: assessment.grade === "S" ? "#1aff8c" : assessment.grade === "A" ? "#88ff99" : assessment.grade === "B" ? "#ffdd66" : assessment.grade === "C" ? "#ffaa00" : "#ff6655",
+              color: assessment.grade === "S" ? "#1aff8c" : assessment.grade === "A" ? "#88ff99" : assessment.grade === "B" ? "#ffdd66" : assessment.grade === "C" ? "#ffaa00" : "#ff6655",
+              background: assessment.grade === "S" ? "#1aff8c11" : assessment.grade === "A" ? "#88ff9911" : "#ffffff06"
+            }}>{assessment.grade}</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontFamily: "'Syne', sans-serif", fontWeight: 700, marginBottom: 4 }}>{assessment.headline}</div>
+              <div style={{ fontSize: 12, color: "#888" }}>
+                Week score: <span style={{ color: "#e8e8f0" }}>{score}%</span>
+                {assessment.delta !== null && (
+                  <span style={{ marginLeft: 8, color: assessment.delta >= 0 ? "#1aff8c" : "#ff6655" }}>
+                    {assessment.delta >= 0 ? "▲" : "▼"} {Math.abs(assessment.delta)}% vs last week
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Habit breakdown */}
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, color: "#444", marginBottom: 12 }}>DAILY HABIT COMPLETION</div>
+            {DAILY_HABITS.map(h => {
+              const days = DAYS.filter((_, di) => weekData.daily?.[h.id]?.[di]).length;
+              const pct = Math.round((days / 7) * 100);
+              return (
+                <div key={h.id} style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                    <span>{h.icon} {h.label}</span>
+                    <span style={{ color: pct >= 85 ? "#1aff8c" : pct >= 57 ? "#ffaa00" : "#ff6655" }}>{days}/7</span>
+                  </div>
+                  <div style={{ background: "#ffffff0a", borderRadius: 4, height: 4 }}>
+                    <div style={{ width: `${pct}%`, height: "100%", borderRadius: 4, transition: "width 0.4s", background: pct >= 85 ? "#1aff8c" : pct >= 57 ? "#ffaa00" : "#ff6655" }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, color: "#444", marginBottom: 12 }}>WEEKLY HABIT STATUS</div>
+            {WEEKLY_HABITS.map(h => {
+              const count = weekData.weekly?.[h.id] || 0;
+              const met = count >= h.targetMin;
+              return (
+                <div key={h.id} className="habit-row">
+                  <span>{h.icon}</span>
+                  <span style={{ flex: 1, fontSize: 13 }}>{h.label}</span>
+                  <span style={{ fontSize: 12, color: met ? "#1aff8c" : "#ff9955" }}>
+                    {met ? "✓" : "✗"} {count}/{h.targetMin}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {assessment.missed.length > 0 && (
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 10, letterSpacing: 3, color: "#444", marginBottom: 12 }}>FOCUS FOR NEXT WEEK</div>
+              {assessment.missed.map((m, i) => (
+                <div key={i} className="missed-item">⚠ {m}</div>
+              ))}
+            </div>
+          )}
+
+          {assessment.missed.length === 0 && (
+            <div style={{ background: "#1aff8c11", border: "1px solid #1aff8c33", borderRadius: 12, padding: 16, marginBottom: 24, textAlign: "center" }}>
+              <div style={{ fontSize: 14, color: "#1aff8c", fontFamily: "'Syne', sans-serif", fontWeight: 700 }}>💯 Perfect Week!</div>
+              <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>All habits completed. Maintain this consistency!</div>
+            </div>
+          )}
+
+          {/* Reading goal */}
+          <div style={{ background: "#ffffff06", border: "1px solid #ffffff10", borderRadius: 12, padding: 16 }}>
+            <div style={{ fontSize: 10, letterSpacing: 3, color: "#444", marginBottom: 8 }}>📚 BOOKS GOAL STATUS</div>
+            <div style={{ fontSize: 13, color: "#888", lineHeight: 1.7 }}>
+              <div>Books read: <span style={{ color: "#e8e8f0" }}>{BOOKS_READ} / {BOOKS_GOAL}</span></div>
+              <div>Reading days this week: <span style={{ color: "#e8e8f0" }}>{Object.values(weekData.daily?.reading || {}).filter(Boolean).length} / 7</span></div>
+              <div>Est. pages this week: <span style={{ color: "#1aff8c" }}>{Object.values(weekData.daily?.reading || {}).filter(Boolean).length * 15}–{Object.values(weekData.daily?.reading || {}).filter(Boolean).length * 20}</span></div>
+              <div style={{ marginTop: 6, fontSize: 11, color: "#555" }}>
+                At 15 pages/day every day: finish by {new Date(Date.now() + ((BOOKS_GOAL - BOOKS_READ) * 300 / 15) * 86400000).toLocaleDateString("en-GB", { month: "short", year: "numeric" })}
+              </div>
+            </div>
+          </div>
+        </>}
+      </div>
+    </div>
+  );
+}
